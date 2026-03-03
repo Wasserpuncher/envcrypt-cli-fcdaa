@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+dist/
+build/
+*.so
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.bak
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+.envcrypt_key  # Generated encryption key
+*.encrypted    # Encrypted files
