@@ -1,10 +1,78 @@
 import os
+import json
 import click
 import base64
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+
+# Standardname der Konfigurationsdatei, die im aktuellen Verzeichnis gesucht wird.
+DEFAULT_CONFIG_FILENAME = ".envcrypt.json"
+# Umgebungsvariable, die auf eine alternative Konfigurationsdatei zeigen kann.
+CONFIG_ENV_VAR = "ENVCRYPT_CONFIG"
+
+
+def _discover_config_path(cli_config_path: Optional[str]) -> Tuple[str, bool]:
+    """Ermittelt den Pfad zur Konfigurationsdatei und ob er explizit gewünscht ist.
+
+    Vorrang der Fundstelle: ``--config``-Flag > Umgebungsvariable ``ENVCRYPT_CONFIG``
+    > Standarddatei ``.envcrypt.json`` im aktuellen Verzeichnis.
+    """
+    if cli_config_path:
+        return cli_config_path, True
+    env_config = os.getenv(CONFIG_ENV_VAR)
+    if env_config:
+        return env_config, True
+    return DEFAULT_CONFIG_FILENAME, False
+
+
+def load_config(cli_config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Lädt die JSON-Konfigurationsdatei (nur Standardbibliothek).
+
+    An explicitly requested file (via ``--config`` or ``ENVCRYPT_CONFIG``) must exist;
+    the implicit default file may be absent (an empty dict is returned then).
+
+    Raises:
+        click.ClickException: If the file is missing (though explicitly requested),
+                              contains invalid JSON or is not a JSON object.
+    """
+    path, explicit = _discover_config_path(cli_config_path)
+    if not os.path.exists(path):
+        if explicit:
+            raise click.ClickException(f"Configuration file '{path}' not found.")
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise click.ClickException(f"Could not read configuration file '{path}': {e}")
+    if not isinstance(data, dict):
+        raise click.ClickException(f"Configuration file '{path}' must contain a JSON object.")
+    # Security: only paths/settings belong in the config, never the raw key material.
+    if 'key' in data or 'secret_key' in data:
+        raise click.ClickException(
+            "Configuration file must not contain a raw key. Use 'key_file' to "
+            "reference a key file or the ENVCYPT_KEY environment variable instead."
+        )
+    return data
+
+
+def resolve_setting(cli_value: Optional[str], config: Dict[str, Any], key: str,
+                    env_var: Optional[str], default: Optional[str]) -> Optional[str]:
+    """Löst eine einzelne Einstellung nach der Vorrangregel auf.
+
+    Precedence: CLI flag > config file > environment variable > built-in default.
+    """
+    if cli_value is not None:
+        return cli_value
+    if config.get(key) is not None:
+        return config[key]
+    if env_var:
+        env_value = os.getenv(env_var)
+        if env_value is not None:
+            return env_value
+    return default
 
 class EnvCryptor:
     """
@@ -139,16 +207,32 @@ def _load_key(key_path: Optional[str] = None) -> bytes:
 @click.option('--key-file', type=click.Path(exists=True, dir_okay=False, readable=True),
               help="Path to the encryption key file. Overrides ENVCYPT_KEY env var if specified.",
               default=None)
+@click.option('--config', 'config_path', type=click.Path(dir_okay=False), default=None,
+              help="Path to a JSON config file (default: .envcrypt.json, if present).")
 @click.pass_context
-def cli(ctx: click.Context, key_file: Optional[str]) -> None:
+def cli(ctx: click.Context, key_file: Optional[str], config_path: Optional[str]) -> None:
     """
     EnvCrypt CLI utility for encrypting and decrypting environment variables and files.
     Ein CLI-Dienstprogramm zum Verschlüsseln und Entschlüsseln von Umgebungsvariablen und Dateien.
+
+    Settings such as the key file path can be pre-defined in a JSON config file so they
+    do not have to be passed on every call. Precedence: CLI flag > config file >
+    environment variable > built-in default.
     """
     ctx.ensure_object(dict) # Stellt sicher, dass das Kontextobjekt ein Dict ist.
+    try:
+        config = load_config(config_path) # Lädt die (optionale) Konfigurationsdatei.
+    except click.ClickException as e:
+        click.echo(f"Error: {e}", err=True)
+        ctx.exit(1)
+        return
+    ctx.obj['CONFIG'] = config # Config für Unterbefehle (z.B. generate-key) bereitstellen.
     if ctx.invoked_subcommand != 'generate-key': # Der Befehl 'generate-key' benötigt keinen Schlüssel zum Start.
+        # Schlüsseldateipfad nach der Vorrangregel auflösen (Flag > Config > Env).
+        resolved_key_file = resolve_setting(key_file, config, 'key_file',
+                                            'ENVCRYPT_KEY_FILE', None)
         try:
-            key = _load_key(key_file) # Versucht, den Schlüssel zu laden.
+            key = _load_key(resolved_key_file) # Versucht, den Schlüssel zu laden.
             ctx.obj['CRYPTOR'] = EnvCryptor(key) # Speichert die EnvCryptor-Instanz im Kontext.
         except click.ClickException as e:
             # Fängt ClickExceptions vom Schlüssel-Laden ab und gibt sie weiter.
@@ -158,12 +242,18 @@ def cli(ctx: click.Context, key_file: Optional[str]) -> None:
 
 @cli.command('generate-key')
 @click.option('--output', type=click.Path(dir_okay=False, writable=True),
-              default='.envcrypt_key', help="Output file to save the generated key.")
-def generate_key_command(output: str) -> None:
+              default=None, help="Output file to save the generated key "
+                                  "(default: .envcrypt_key, or 'key_output' from the config).")
+@click.pass_context
+def generate_key_command(ctx: click.Context, output: Optional[str]) -> None:
     """
     Generates a new Fernet encryption key and saves it to a file.
     Erzeugt einen neuen Fernet-Verschlüsselungsschlüssel und speichert ihn in einer Datei.
     """
+    config = ctx.obj.get('CONFIG', {}) if ctx.obj else {}
+    # Ausgabepfad nach der Vorrangregel auflösen (Flag > Config > Env > Default).
+    output = resolve_setting(output, config, 'key_output',
+                             'ENVCRYPT_KEY_OUTPUT', '.envcrypt_key')
     key = Fernet.generate_key() # Generiert einen neuen Fernet-Schlüssel.
     output_path = Path(output) # Erstellt ein Path-Objekt für die Ausgabedatei.
     try:

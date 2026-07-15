@@ -1,12 +1,13 @@
 import pytest
 import os
+import json
 import base64
 import click
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 from click.testing import CliRunner
 
-from main import EnvCryptor, _load_key, cli, Fernet
+from main import EnvCryptor, _load_key, cli, Fernet, load_config, resolve_setting
 
 # Helper function to generate a valid Fernet key for testing
 def generate_test_key() -> bytes:
@@ -241,3 +242,118 @@ def test_cli_no_key_provided(runner: CliRunner):
             result = runner.invoke(cli, ['encrypt', 'some_value']) # Versucht, ohne Schlüssel zu verschlüsseln.
             assert result.exit_code == 1 # Erwartet einen Fehler-Exit-Code.
             assert "Error: No encryption key found." in result.stderr # Überprüft die Fehlermeldung.
+
+
+# --- Test JSON configuration file support ---
+def test_load_config_reads_json_object(tmp_path: Path):
+    """Eine gültige JSON-Config wird als Dictionary geladen."""
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"key_file": "some.key", "key_output": "out.key"}))
+    assert load_config(str(cfg)) == {"key_file": "some.key", "key_output": "out.key"}
+
+
+def test_load_config_missing_explicit_raises(tmp_path: Path):
+    """Eine explizit angeforderte, fehlende Config ist ein Fehler."""
+    with pytest.raises(click.ClickException, match="not found"):
+        load_config(str(tmp_path / "nope.json"))
+
+
+def test_load_config_invalid_json_raises(tmp_path: Path):
+    """Ungültiges JSON löst einen Fehler aus."""
+    cfg = tmp_path / "bad.json"
+    cfg.write_text("{not valid json}")
+    with pytest.raises(click.ClickException, match="Could not read configuration file"):
+        load_config(str(cfg))
+
+
+def test_load_config_non_object_raises(tmp_path: Path):
+    """Eine JSON-Datei, die kein Objekt ist, wird abgelehnt."""
+    cfg = tmp_path / "list.json"
+    cfg.write_text(json.dumps([1, 2, 3]))
+    with pytest.raises(click.ClickException, match="must contain a JSON object"):
+        load_config(str(cfg))
+
+
+def test_load_config_rejects_raw_key(tmp_path: Path):
+    """Ein roher Schlüssel in der Config wird aus Sicherheitsgründen abgelehnt."""
+    cfg = tmp_path / "secret.json"
+    cfg.write_text(json.dumps({"key": "leaked"}))
+    with pytest.raises(click.ClickException, match="must not contain a raw key"):
+        load_config(str(cfg))
+
+
+def test_resolve_setting_precedence():
+    """Vorrang: CLI > Config > Env > Default."""
+    with patch.dict(os.environ, {"ENVCRYPT_X": "envv"}, clear=True):
+        assert resolve_setting("cli", {"k": "cfg"}, "k", "ENVCRYPT_X", "def") == "cli"
+        assert resolve_setting(None, {"k": "cfg"}, "k", "ENVCRYPT_X", "def") == "cfg"
+        assert resolve_setting(None, {}, "k", "ENVCRYPT_X", "def") == "envv"
+    with patch.dict(os.environ, {}, clear=True):
+        assert resolve_setting(None, {}, "k", "ENVCRYPT_X", "def") == "def"
+
+
+def test_cli_config_key_file_used(runner: CliRunner, tmp_path: Path, fernet_key: bytes):
+    """Der Schlüsseldateipfad wird aus der Config gelesen (kein --key-file nötig)."""
+    key_file = tmp_path / "cfg_key.key"
+    key_file.write_bytes(fernet_key)
+    cfg = tmp_path / ".envcrypt.json"
+    cfg.write_text(json.dumps({"key_file": str(key_file)}))
+
+    plaintext = "CONFIG_SECRET"
+    with patch.dict(os.environ, {}, clear=True):
+        enc = runner.invoke(cli, ['--config', str(cfg), 'encrypt', plaintext])
+        assert enc.exit_code == 0, enc.output
+        encrypted = enc.stdout.strip()
+        assert encrypted != plaintext
+        dec = runner.invoke(cli, ['--config', str(cfg), 'decrypt', encrypted])
+        assert dec.exit_code == 0, dec.output
+        assert dec.stdout.strip() == plaintext
+
+
+def test_cli_flag_overrides_config_key_file(runner: CliRunner, tmp_path: Path, fernet_key: bytes):
+    """--key-file hat Vorrang vor dem key_file aus der Config."""
+    # Korrekte Schlüsseldatei (per Flag) und eine andere, falsche in der Config.
+    right_key = tmp_path / "right.key"
+    right_key.write_bytes(fernet_key)
+    wrong_key = tmp_path / "wrong.key"
+    wrong_key.write_bytes(Fernet.generate_key())
+    cfg = tmp_path / ".envcrypt.json"
+    cfg.write_text(json.dumps({"key_file": str(wrong_key)}))
+
+    plaintext = "OVERRIDE_ME"
+    with patch.dict(os.environ, {}, clear=True):
+        # Verschlüsseln mit dem korrekten Schlüssel via Flag (überschreibt die Config).
+        enc = runner.invoke(cli, ['--config', str(cfg), '--key-file', str(right_key),
+                                  'encrypt', plaintext])
+        assert enc.exit_code == 0, enc.output
+        encrypted = enc.stdout.strip()
+        # Entschlüsseln mit demselben Flag-Schlüssel muss gelingen.
+        dec = runner.invoke(cli, ['--config', str(cfg), '--key-file', str(right_key),
+                                  'decrypt', encrypted])
+        assert dec.exit_code == 0, dec.output
+        assert dec.stdout.strip() == plaintext
+
+
+def test_cli_generate_key_output_from_config(runner: CliRunner, tmp_path: Path):
+    """generate-key nutzt den Ausgabepfad aus der Config, wenn --output fehlt."""
+    out_key = tmp_path / "from_config.key"
+    cfg = tmp_path / ".envcrypt.json"
+    cfg.write_text(json.dumps({"key_output": str(out_key)}))
+
+    result = runner.invoke(cli, ['--config', str(cfg), 'generate-key'])
+    assert result.exit_code == 0, result.output
+    assert out_key.exists()
+    Fernet(out_key.read_bytes())  # muss ein gültiger Fernet-Schlüssel sein
+
+
+def test_cli_config_via_env_var(runner: CliRunner, tmp_path: Path, fernet_key: bytes):
+    """ENVCRYPT_CONFIG kann die Config-Datei bereitstellen (ohne --config)."""
+    key_file = tmp_path / "envcfg_key.key"
+    key_file.write_bytes(fernet_key)
+    cfg = tmp_path / "custom_config.json"
+    cfg.write_text(json.dumps({"key_file": str(key_file)}))
+
+    with patch.dict(os.environ, {"ENVCRYPT_CONFIG": str(cfg)}, clear=True):
+        enc = runner.invoke(cli, ['encrypt', 'VIA_ENV'])
+        assert enc.exit_code == 0, enc.output
+        assert enc.stdout.strip() != "VIA_ENV"

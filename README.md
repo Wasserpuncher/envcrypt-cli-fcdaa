@@ -117,6 +117,38 @@ EnvCrypt CLI searches for the encryption key in the following order:
 
 It is highly recommended to use an environment variable (e.g., `ENVCYPT_KEY`) in production environments or to manage the key file securely with appropriate permissions. **Never commit your encryption key to version control!**
 
+### Configuration File
+
+To avoid passing the same options on every call, EnvCrypt CLI can read settings from a
+small JSON configuration file (parsed with the Python standard library only, no extra
+dependencies). By default it looks for `.envcrypt.json` in the current directory; you can
+point to another file with `--config` or the `ENVCRYPT_CONFIG` environment variable.
+
+Example `.envcrypt.json`:
+
+```json
+{
+  "key_file": "secrets/project.key",
+  "key_output": "secrets/project.key"
+}
+```
+
+Usage:
+
+```bash
+envcrypt --config .envcrypt.json encrypt "my_secret"   # key_file taken from the config
+envcrypt generate-key                                   # writes to key_output from the config
+```
+
+**Precedence (highest wins):** CLI flag (`--key-file` / `--output`) > configuration file
+(`key_file` / `key_output`) > environment variable (`ENVCRYPT_KEY_FILE` /
+`ENVCRYPT_KEY_OUTPUT`) > built-in default.
+
+> **Security:** The configuration file only references a key *file* via `key_file`; it must
+> never contain the raw key. A config that includes a `key`/`secret_key` field is rejected.
+> Raw key material is still provided via the `ENVCYPT_KEY` environment variable or the key
+> file itself.
+
 ## Contributing
 
 We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to report issues, suggest features, and submit code.
