@@ -119,7 +119,7 @@ def _load_key(key_path: Optional[str] = None) -> bytes:
             click.echo(f"Warning: Key file not found at {key_file_path}", err=True)
 
     # 3. Schlüssel aus Standarddatei laden
-    default_key_file = Path('.envcrypt_key') # Definiert den Standard-Schlüsseldateipfad.
+    default_key_file = Path.cwd() / '.envcrypt_key' # Definiert den Standard-Schlüsseldateipfad im aktuellen Verzeichnis.
     if default_key_file.exists():
         try:
             key = default_key_file.read_bytes() # Liest den Schlüssel aus der Standarddatei.

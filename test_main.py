@@ -1,6 +1,7 @@
 import pytest
 import os
 import base64
+import click
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 from click.testing import CliRunner
@@ -25,7 +26,9 @@ def cryptor(fernet_key: bytes) -> EnvCryptor:
 @pytest.fixture
 def runner() -> CliRunner:
     """Fixture, die einen CliRunner für Tests bereitstellt."""
-    return CliRunner()
+    # mix_stderr=False, damit stdout (Nutzdaten) und stderr (Info-/Warn-Meldungen
+    # via err=True) getrennt geprüft werden können.
+    return CliRunner(mix_stderr=False)
 
 # --- Test EnvCryptor Class ---
 def test_envcryptor_encrypt_decrypt(cryptor: EnvCryptor):

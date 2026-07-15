@@ -1,2 +1,5 @@
-click
+# click pinned to the 8.1.x line: the test suite relies on CliRunner(mix_stderr=False),
+# which click 8.2 removed. Pinning keeps behavior uniform across the CI Python matrix
+# (3.9/3.10/3.11); click 8.2+ also cannot install on Python 3.9.
+click>=8.1,<8.2
 cryptography
