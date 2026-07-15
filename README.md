@@ -1,6 +1,6 @@
 # EnvCrypt CLI
 
-![Python application CI](https://github.com/your-org/envcrypt-cli/actions/workflows/python-app.yml/badge.svg)
+![Python application CI](https://github.com/Wasserpuncher/envcrypt-cli-fcdaa/actions/workflows/python-app.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A powerful and user-friendly command-line interface (CLI) utility for securely encrypting and decrypting sensitive environment variables and entire `.env` files. Designed with security and ease of use in mind, EnvCrypt CLI helps developers and operations teams manage secrets effectively in various environments.
@@ -25,7 +25,7 @@ A powerful and user-friendly command-line interface (CLI) utility for securely e
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/your-org/envcrypt-cli.git
+    git clone https://github.com/Wasserpuncher/envcrypt-cli-fcdaa.git
     cd envcrypt-cli
     ```
 2.  **Create a virtual environment** (recommended):
